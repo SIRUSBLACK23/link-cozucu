@@ -1,6 +1,7 @@
 import asyncio
 from fastapi import FastAPI, Query
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 app = FastAPI()
 
@@ -8,76 +9,60 @@ app = FastAPI()
 async def coz(url: str = Query(...)):
     try:
         async with async_playwright() as p:
+            # Gerçek Chrome gibi davranması için özel argümanlar
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled"
+                ]
             )
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768},
+                locale="tr-TR"
             )
             page = await context.new_page()
-
-            # Tüm ağ isteklerini dinleyip Trendyol/HB linki geçerse yakalayalım
-            yakalanan_link = None
-            def on_request(request):
-                nonlocal yakalanan_link
-                req_url = request.url
-                if "trendyol.com" in req_url or "hepsiburada.com" in req_url:
-                    if not yakalanan_link:
-                        yakalanan_link = req_url
-
-            page.on("request", on_request)
+            
+            # Cloudflare bot algılamasını kapat
+            await stealth_async(page)
 
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=25000)
             except Exception:
                 pass
 
-            await asyncio.sleep(2)
+            # Sayfanın yüklenmesi ve Cloudflare kontrolü için bekle
+            await asyncio.sleep(4)
 
-            # Sayfa içinde doğrudan trendyol/hepsiburada linki var mı tara
-            try:
-                linkler = await page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
-                for l in linkler:
-                    if "trendyol.com" in l or "hepsiburada.com" in l:
-                        await browser.close()
-                        return {"hedef": l}
-            except Exception:
-                pass
-
-            # Butonlara tıkla (yeni sekme açarsa onu da yakalamak için context dinle)
-            try:
-                popup_kapat = await page.query_selector("button.close, .modal-close, [aria-label='Close'], .btn-close")
-                if popup_kapat:
-                    await popup_kapat.click()
-            except Exception:
-                pass
-
-            try:
-                butonlar = await page.query_selector_all("a, button")
-                for b in butonlar:
-                    metin = (await b.inner_text()).lower()
-                    if "git" in metin or "kampanya" in metin or "fırsat" in metin:
-                        await b.click(timeout=3000)
-                        break
-            except Exception:
-                pass
-
-            # Tıklama sonrası yönlenmeyi veya yeni sekmeyi bekle
-            for _ in range(10):
-                if yakalanan_link:
+            # 1. Yöntem: Sayfa içindeki tüm <a> etiketlerindeki Trendyol / HB linklerini tara
+            for _ in range(8):
+                if "trendyol.com" in page.url or "hepsiburada.com" in page.url:
+                    sonuc = page.url
                     await browser.close()
-                    return {"hedef": yakalanan_link}
+                    return {"hedef": sonuc}
 
-                for p_item in context.pages:
-                    if "trendyol.com" in p_item.url or "hepsiburada.com" in p_item.url:
-                        res = p_item.url
-                        await browser.close()
-                        return {"hedef": res}
+                try:
+                    hrefs = await page.eval_on_selector_all("a", "elements => elements.map(el => el.href)")
+                    for h in hrefs:
+                        if "trendyol.com" in h or "hepsiburada.com" in h:
+                            await browser.close()
+                            return {"hedef": h}
+                except Exception:
+                    pass
 
-                await asyncio.sleep(1)
+                # 2. Yöntem: Butona tıkla
+                try:
+                    buton = await page.query_selector("a:has-text('Kampanyaya Git'), a:has-text('Fırsata Git'), a.btn-primary")
+                    if buton:
+                        await buton.click()
+                except Exception:
+                    pass
 
-            sonuc = yakalanan_link or page.url
+                await asyncio.sleep(1.5)
+
+            sonuc = page.url
             await browser.close()
             return {"hedef": sonuc}
 
