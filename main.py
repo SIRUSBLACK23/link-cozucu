@@ -18,16 +18,35 @@ async def coz(url: str = Query(...)):
             page = await context.new_page()
 
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                await page.goto(url, wait_until="networkidle", timeout=30000)
             except Exception:
                 pass
 
-            for _ in range(12):
+            # Varsa bildirim veya popup kapatma butonunu tıkla
+            try:
+                popup_kapat = await page.query_selector("button.close, .modal-close, [aria-label='Close'], .btn-close")
+                if popup_kapat:
+                    await popup_kapat.click()
+                    await asyncio.sleep(1)
+            except Exception:
+                pass
+
+            # Kampanyaya Git / Fırsata Git butonuna tıkla
+            try:
+                buton = await page.query_selector("a:has-text('Kampanyaya Git'), a:has-text('Fırsata Git'), button:has-text('Kampanyaya Git'), a.btn-primary")
+                if buton:
+                    await buton.click()
+            except Exception:
+                pass
+
+            # Trendyol veya Hepsiburada URL'si gelene kadar bekle
+            for _ in range(15):
                 suanki = page.url
                 if "trendyol.com" in suanki or "hepsiburada.com" in suanki:
                     await browser.close()
                     return {"hedef": suanki}
 
+                # Sayfadaki tüm dış linkleri kontrol et
                 try:
                     linkler = await page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
                     for l in linkler:
